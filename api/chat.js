@@ -1,6 +1,5 @@
-// api/chat.js — mit Routing-Regeln für Preisfragen (Gitterrost / Podest) + CORS
+// api/chat.js — Preis-Kurzinfo + klickbare Links (HTML) + CORS
 module.exports = async (req, res) => {
-  // --- CORS (bei Bedarf ORIGIN auf deine Domain setzen) ---
   const ORIGIN = "*";
   res.setHeader("Access-Control-Allow-Origin", ORIGIN);
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
@@ -10,55 +9,50 @@ module.exports = async (req, res) => {
 
   try {
     const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-    if (!OPENAI_API_KEY) {
-      return res.status(500).json({ reply: "SERVER_ERROR: OPENAI_API_KEY fehlt im Vercel Projekt." });
-    }
+    if (!OPENAI_API_KEY) return res.status(500).json({ reply: "SERVER_ERROR: OPENAI_API_KEY fehlt." });
 
-    // Body sicher parsen
     const body = typeof req.body === "string" ? JSON.parse(req.body || "{}") : (req.body || {});
     const { messages = [] } = body;
 
-    // Links zentral definieren
     const LINKS = {
       gitterrost: "https://www.fertighaus-designprodukte.de/gitterrostkostenrechner",
       podest:     "https://www.fertighaus-designprodukte.de/eingangspodest-system"
     };
 
-    // Kompakte Firmen-KB (optional erweiterbar)
     const KB = {
-      company: "Fertighaus-Designprodukte GmbH",
-      contact: "info@fertighaus-designprodukte.de, +49 6458 4869988",
+      prices_hint: {
+        gitterrost: {
+          PRO:   "ab 330 €/lfm",
+          BASIC: "ab 200 €/lfm",
+          blackline: "Konsole: 149 €/lfm"
+        }
+      }
     };
 
-    // System-Regeln, die dein gewünschtes Verhalten fest verdrahten
     const systemPrompt = [
-      "Du bist der AI-Assistent von Fertighaus-Designprodukte. Antworte stets auf Deutsch, kurz, freundlich und präzise.",
-      "WICHTIGE ROUTING-REGELN:",
-      `1) Preisfragen zu Gitterrosten: Verweise IMMER auf den Kostenrechner (${LINKS.gitterrost}).`,
-      `2) Preisfragen zu Podesten/Eingangspodest: Verweise IMMER auf die Podest-Seite (${LINKS.podest}).`,
-      "3) Schreibe IMMER dazu: 'Sobald Sie dort die Anfrage absenden, erhalten Sie die passenden Anleitungen automatisch mitgeschickt.'",
-      "4) Nenne keine festen Preise aus dem Kopf; leite konsequent auf die passende Seite.",
-      "5) Beantworte alle anderen Produktfragen sachlich, hilfsbereit und kundenorientiert.",
-      `Firmen-KB: ${JSON.stringify(KB)}`
+      "Du bist der AI-Assistent von Fertighaus-Designprodukte. Antworte kurz, freundlich und präzise in DE.",
+      // WICHTIG: Wir wollen HTML ausgeben (für klickbare Links)
+      "Wenn du Links ausgibst, verwende reines HTML mit <a href=\"…\" target=\"_blank\" rel=\"noopener\">…</a> und <br> für Zeilenumbrüche. Kein Markdown.",
+      "REGELN für Preisfragen:",
+      `- Gitterrost: gib zuerst eine kurze Preisübersicht (z. B. PRO ${KB.prices_hint.gitterrost.PRO}, BASIC ${KB.prices_hint.gitterrost.BASIC}, Blackline-Konsole ${KB.prices_hint.gitterrost.blackline}).`,
+      `  Danach in einer separaten Zeile ein klickbarer Link: <a href="${LINKS.gitterrost}" target="_blank" rel="noopener">Gitterrostkostenrechner öffnen</a>.`,
+      "  Füge IMMER hinzu: „Sobald Sie dort die Anfrage absenden, erhalten Sie die passenden Anleitungen automatisch mitgeschickt.“",
+      `- Podest: nenne, dass der Preis von Größe/Konfiguration abhängt und verweise mit klickbarem Link: <a href="${LINKS.podest}" target="_blank" rel="noopener">Eingangspodest-System</a> + derselbe Hinweis zu den Anleitungen.`,
+      "- Keine festen Endpreise erfinden; kurze Orientierung + Link ist Pflicht.",
     ].join("\n");
 
-    // (Optional) kleine Heuristik: Wenn die letzte User-Nachricht klar eine Preisfrage ist,
-    // geben wir dem Modell zusätzlich einen sanften Nudge über eine 'assistant' Vorgabe.
     const lastUser = [...messages].reverse().find(m => m?.role === "user")?.content?.toLowerCase() || "";
-    let assistantNudge = "";
-    const isPriceIntent = /preis|preise|kosten|angebot|kalkulator|rechner|wie teuer|kostenrechner/.test(lastUser);
-    const mentionsRost  = /(gitterrost|rost|rostsystem|aluline|blackline)/.test(lastUser);
-    const mentionsPod   = /(podest|eingangspodest|stufe|steg|treppe)/.test(lastUser);
+    const isPrice = /preis|preise|kosten|angebot|kalkulator|rechner|wie teuer|kostenrechner/.test(lastUser);
+    const aboutRost = /(gitterrost|rost|rostsystem|aluline|blackline)/.test(lastUser);
+    const aboutPod  = /(podest|eingangspodest|stufe|steg|treppe)/.test(lastUser);
 
-    if (isPriceIntent && mentionsRost) {
-      assistantNudge =
-        `Bei Preisfragen zu Gitterrost: Verweise zuerst auf ${LINKS.gitterrost} und erwähne, dass beim Absenden die Anleitungen automatisch mitkommen.`;
-    } else if (isPriceIntent && mentionsPod) {
-      assistantNudge =
-        `Bei Preisfragen zum Podest: Verweise zuerst auf ${LINKS.podest} und erwähne, dass beim Absenden die Anleitungen automatisch mitkommen.`;
+    let extraRule = "";
+    if (isPrice && aboutRost) {
+      extraRule = "Dies ist eine Preisfrage zu Gitterrost – gib die Preisübersicht + HTML-Link wie angewiesen aus.";
+    } else if (isPrice && aboutPod) {
+      extraRule = "Dies ist eine Preisfrage zum Podest – gib die kurze Orientierung + HTML-Link wie angewiesen aus.";
     }
 
-    // OpenAI call
     const r = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -70,17 +64,13 @@ module.exports = async (req, res) => {
         temperature: 0.3,
         messages: [
           { role: "system", content: systemPrompt },
-          ...(assistantNudge ? [{ role: "system", content: assistantNudge }] : []),
+          ...(extraRule ? [{ role: "system", content: extraRule }] : []),
           ...messages
         ]
       })
     });
 
-    if (!r.ok) {
-      const txt = await r.text();
-      return res.status(500).json({ reply: "OPENAI_ERROR: " + txt });
-    }
-
+    if (!r.ok) return res.status(500).json({ reply: "OPENAI_ERROR: " + (await r.text()) });
     const data = await r.json();
     const reply = data?.choices?.[0]?.message?.content || "Keine Antwort erhalten.";
     return res.status(200).json({ reply });
